@@ -1,0 +1,207 @@
+function getSleeperData() {
+  // Set your league ID
+  var leagueId = "INSERT LEAGUE ID HERE"; 
+
+  // Construct the API URLs (base URLs)
+  var rostersUrl = "https://api.sleeper.app/v1/league/" + leagueId + "/rosters";
+  var usersUrl = "https://api.sleeper.app/v1/league/" + leagueId + "/users";
+  var playersUrl = "https://api.sleeper.app/v1/players/nfl";
+  var currentWeekUrl = "https://api.sleeper.app/v1/state/nfl";
+
+  // Fetch rosters data 
+  var rostersResponse = UrlFetchApp.fetch(rostersUrl);
+  var rostersData = JSON.parse(rostersResponse.getContentText());
+
+  // Fetch users data
+  var usersResponse = UrlFetchApp.fetch(usersUrl);
+  var usersData = JSON.parse(usersResponse.getContentText());
+
+  // Fetch players data
+  var playersResponse = UrlFetchApp.fetch(playersUrl);
+  var playersData = JSON.parse(playersResponse.getContentText());
+
+  // Get the current week from the API
+  var currentWeekResponse = UrlFetchApp.fetch(currentWeekUrl);
+  var currentWeekData = JSON.parse(currentWeekResponse.getContentText());
+  var currentWeek = currentWeekData.week;
+
+  // Create a mapping of owner ID to owner name
+  var ownerNames = {};
+  for (var i = 0; i < usersData.length; i++) {
+    ownerNames[usersData[i].user_id] = usersData[i].display_name;
+  }
+
+  // Create a mapping of player ID to player name
+  var playerNames = {};
+  for (var playerId in playersData) {
+    playerNames[playerId] = playersData[playerId].full_name;
+  }
+
+  // 1. Create a mapping of roster ID to owner ID
+  var rosterToOwner = {};
+  for (var i = 0; i < rostersData.length; i++) {
+    var roster = rostersData[i];
+    rosterToOwner[roster.roster_id] = roster.owner_id;
+  }
+
+  // 2. Create a mapping of owner ID to team name
+  var ownerToTeamName = {};
+  for (var i = 0; i < usersData.length; i++) {
+    var user = usersData[i];
+    if (user.metadata && user.metadata.team_name) {
+      ownerToTeamName[user.user_id] = user.metadata.team_name;
+    } else {
+      // Generate team name if not present in metadata
+      ownerToTeamName[user.user_id] = "Team " + user.display_name; 
+    }
+  }
+
+  // Get the specific sheet by ID
+  var ss = SpreadsheetApp.openById("INSERT GOOGLE SHEETS ID HERE");
+  var sheet = ss.getSheetByName("INSERT SHEET NAME HERE");
+
+  // Clear existing data (optional)
+  sheet.clearContents();
+
+  // --- Write data for each week ---
+  var row = 1; // Starting row
+
+  for (var week = 1; week <= currentWeek; week++) {
+    // --- Write week number to the sheet ---
+    sheet.getRange(row, 1).setValue("Week " + week);
+
+    // Construct the matchupsUrl for the current week
+    var matchupsUrl = "https://api.sleeper.app/v1/league/" + leagueId + "/matchups/" + week;
+
+    // Fetch matchups data for the current week
+    var matchupsResponse = UrlFetchApp.fetch(matchupsUrl);
+    var matchupsData = JSON.parse(matchupsResponse.getContentText());
+
+    // --- Write matchup data to the sheet ---
+    var currentRow = row + 1; // Starting row for this week's data
+    var col = 1; // Starting column for this week's data
+
+    for (var i = 0; i < matchupsData.length; i++) {
+      var matchup = matchupsData[i];
+
+      // Write team name
+      var rosterId = matchup.roster_id;
+      var ownerId = rosterToOwner[rosterId];
+      var teamName = ownerToTeamName[ownerId] || rosterId;
+      sheet.getRange(currentRow, col + 1).setValue(teamName);
+
+      // Write headers
+      sheet.getRange(currentRow + 1, col).setValue("Slot");
+      sheet.getRange(currentRow + 1, col + 1).setValue("Player");
+      sheet.getRange(currentRow + 1, col + 2).setValue("Position");
+      sheet.getRange(currentRow + 1, col + 3).setValue("Score");
+
+      // Get players, starters, and points
+      var players = matchup.players;
+      var starters = matchup.starters;
+      var starterPoints = matchup.starters_points;
+      var playerPoints = matchup.players_points;
+
+      // Write player data (starters and bench) in columns
+      var playerRow = currentRow + 2; // Starting row for player data
+
+      // Roster slots for starters
+      var starterSlots = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "FLEX", "SF", "K", "DEF"]; 
+
+      if (starters) {
+        // Write starters
+        for (var j = 0; j < starters.length; j++) {
+          var playerId = starters[j];
+
+          // Write roster slot
+          sheet.getRange(playerRow, col).setValue(starterSlots[j]); 
+
+          if (isNaN(playerId)) {
+            sheet.getRange(playerRow, col + 1).setValue(playerId);
+            sheet.getRange(playerRow, col + 2).setValue("DEF");
+          } else {
+            if (playerId === 0) {
+              sheet.getRange(playerRow, col + 1).setValue("Empty");
+              sheet.getRange(playerRow, col + 2).setValue("");
+            } else if (playersData[playerId]) {
+              sheet.getRange(playerRow, col + 1).setValue(playerNames[playerId]);
+              sheet.getRange(playerRow, col + 2).setValue(playersData[playerId].position);
+            } else {
+              sheet.getRange(playerRow, col + 1).setValue(playerNames[playerId]);
+              sheet.getRange(playerRow, col + 2).setValue("Position not found");
+            }
+          }
+
+          sheet.getRange(playerRow, col + 3).setValue(starterPoints[j] || 0);
+          playerRow++; // Move to the next row for the next player
+        }
+      }
+
+      if (players) {
+        // Write bench players
+        var benchPlayers = players.filter(function(player) {
+          return !starters.includes(player);
+        });
+
+        for (var k = 0; k < benchPlayers.length; k++) {
+          var playerId = benchPlayers[k];
+
+          // Write roster slot ("BN")
+          sheet.getRange(playerRow, col).setValue("BN"); 
+
+          if (isNaN(playerId)) {
+            sheet.getRange(playerRow, col + 1).setValue(playerId);
+            sheet.getRange(playerRow, col + 2).setValue("DEF");
+          } else {
+            sheet.getRange(playerRow, col + 1).setValue(playerNames[playerId]);
+
+            if (playersData[playerId]) {
+              sheet.getRange(playerRow, col + 2).setValue(playersData[playerId].position);
+            } else {
+              sheet.getRange(playerRow, col + 2).setValue("Position not found");
+            }
+          }
+
+          var benchPlayerPoints = playerPoints[playerId];
+          sheet.getRange(playerRow, col + 3).setValue(benchPlayerPoints || 0);
+
+          playerRow++; // Move to the next row for the next player
+        }
+      }
+
+      col += 5; // Move to the next team's starting column (4 columns for data + 1 for spacing)
+    }
+
+    // --- Write matchup number table for the current week ---
+    var tableCol = col + 1; // Starting column for the matchup table
+    sheet.getRange(currentRow, tableCol).setValue("Matchup Number");
+    sheet.getRange(currentRow, tableCol + 1).setValue("Team 1");
+    sheet.getRange(currentRow, tableCol + 2).setValue("Team 2");
+
+    // Assuming 6 matchups per week (adjust if needed)
+    for (var i = 1; i <= 6; i++) {
+      sheet.getRange(currentRow + i, tableCol).setValue(i);
+    }
+
+    // Write team names in the matchup table
+    for (var i = 0; i < matchupsData.length; i++) {
+      var matchup = matchupsData[i];
+      var rosterId = matchup.roster_id;
+      var ownerId = rosterToOwner[rosterId];
+      var teamName = ownerToTeamName[ownerId] || rosterId;
+      var matchupNum = matchup.matchup_id;
+      var matchupRow = currentRow + matchupNum; // Row in the matchup table corresponding to this matchup number
+
+      // Corrected logic for determining Team 1 or Team 2
+      var firstTeamRosterId = matchupsData.find(function(m) { 
+        return m.matchup_id === matchupNum; 
+      }).roster_id;
+
+      var teamCol = (rosterId === firstTeamRosterId) ? tableCol + 1 : tableCol + 2; 
+
+      sheet.getRange(matchupRow, teamCol).setValue(teamName);
+    }
+
+    row = currentRow + 33 + 2; // Move to the next week's starting row (33 rows for data + 2 for spacing)
+  }
+}
